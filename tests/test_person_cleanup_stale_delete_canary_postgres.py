@@ -325,12 +325,12 @@ class StaleDeleteCanaryPostgresTests(unittest.TestCase):
         self.assertEqual(persisted['admin_auth_attempts'],1)
         self.assertEqual(sum(i['post_attempts'] for i in persisted['items']),0)
 
-    def test_hard_limits_omitted_one_100_and_invalid_never_exceed_100(self):
+    def test_hard_limits_omitted_one_10_100_and_invalid_never_exceed_100(self):
         self.create_chain(105)
-        for value in (101,1000,-1,'malformed',None,{}):
+        for value in (0, 101, 1000, -1, 'malformed', None, {}):
             with self.subTest(value=value),self.assertRaises((ValueError,TypeError)):
                 person_cleanup_db.create_stale_delete_canary_job(value)
-        for value in (1,100,'omitted'):
+        for value in (1, 10, 100, 'omitted'):
             job=(person_cleanup_db.create_stale_delete_canary_job() if value=='omitted'
                  else person_cleanup_db.create_stale_delete_canary_job(value))
             self.assertEqual(job['candidate_total'],100 if value=='omitted' else value)

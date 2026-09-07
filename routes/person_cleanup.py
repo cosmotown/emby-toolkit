@@ -31,6 +31,16 @@ logger = logging.getLogger(__name__)
 person_cleanup_bp = Blueprint('person_cleanup_bp', __name__, url_prefix='/api/person-cleanup')
 
 
+def _serialize_stale_delete_canary_job(job):
+    if not job:
+        return None
+    result = dict(job)
+    result.pop('confirmation_token_hash', None)
+    # candidate_total is fixed by the backend when the job is created.
+    result['selected_total'] = int(result.get('candidate_total') or 0)
+    return result
+
+
 def _serialize_reference_items(items):
     return [
         {
@@ -290,6 +300,8 @@ def create_stale_delete_canary_preview():
     return jsonify({
         'job_id': job['job_id'],
         'state': 'previewing',
+        'requested_limit': int(job.get('requested_limit') or limit),
+        'selected_total': int(job.get('candidate_total') or 0),
         'hard_limit': person_cleanup_db.STALE_DELETE_CANARY_LIMIT,
         'message': 'Canary GET-only 预览已提交；此阶段不会删除人物',
     }), 202
@@ -299,11 +311,8 @@ def create_stale_delete_canary_preview():
 @admin_required
 def get_latest_stale_delete_canary():
     job = person_cleanup_db.get_stale_delete_canary_job(include_items=True)
-    if job:
-        job = dict(job)
-        job.pop('confirmation_token_hash', None)
     return jsonify({
-        'job': job,
+        'job': _serialize_stale_delete_canary_job(job),
         'hard_limit': person_cleanup_db.STALE_DELETE_CANARY_LIMIT,
     })
 
@@ -314,9 +323,10 @@ def get_stale_delete_canary(job_id):
     job = person_cleanup_db.get_stale_delete_canary_job(job_id, include_items=True)
     if not job:
         return jsonify({'error': 'Stale Index Canary 任务不存在'}), 404
-    job = dict(job)
-    job.pop('confirmation_token_hash', None)
-    return jsonify({'job': job, 'hard_limit': person_cleanup_db.STALE_DELETE_CANARY_LIMIT})
+    return jsonify({
+        'job': _serialize_stale_delete_canary_job(job),
+        'hard_limit': person_cleanup_db.STALE_DELETE_CANARY_LIMIT,
+    })
 
 
 @person_cleanup_bp.route(

@@ -22,7 +22,8 @@ test('Canary is a separate UI with a visible immutable backend limit', () => {
   assert.match(source, /它不是 orphan 清理/);
   assert.match(source, /不提供全量删除、全选或 limit 覆盖/);
   assert.match(source, /stale-delete-canary\/preview/);
-  assert.match(source, /\{ limit: 100 \}/);
+  assert.match(source, /limit: staleDeleteCanarySize\.value/);
+  assert.doesNotMatch(source, /\{ limit: 100 \}/);
 });
 
 test('Canary has a dedicated phrase and short-lived confirmation endpoint', () => {
