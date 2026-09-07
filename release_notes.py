@@ -2,6 +2,27 @@
 
 CUSTOM_RELEASES = [
     {
+        "version": "v7.2.27",
+        "published_at": "2026-09-07T00:00:00+08:00",
+        "url": "https://github.com/cosmotown/emby-vision-hub/releases/tag/v7.2.27",
+        "changelog": """## Stable Stale Canary 数量安全选择器
+
+- Stable Stale 删除 Canary 新增数量选择器，默认值从固定 100 调整为更保守的 10。
+- 可选范围为 1～100；前端仅允许整数并在提交前严格校验，非法值不会发送 Preview 请求。
+- Preview 明确显示稳定候选、同名排除、请求数量、后端实际选中、实时预检通过与拒绝数量。
+- 若证据变化导致实际选中少于请求数量，页面会分别展示请求值和实际值，不会伪装成请求数量。
+- 最终确认弹窗中的“最多删除 X 位 Person”只使用后端固定 Preview 返回的 `selected_total`，不信任当前前端输入。
+
+### 安全边界
+
+- 后端 100 人硬上限及确定性抽样算法没有变化；直接绕过前端也无法选择超过 100 人。
+- Stable Stale eligibility、same-name 排除、管理员认证、at-most-once `DeletePerson`、restart no-resume、realtime precheck 及最终 snapshot closure 均未修改。
+- 本版本仅调整 Canary Preview 的前端数量选择和展示，不执行或触发任何生产 Canary。
+
+""",
+    },
+
+    {
         "version": "v7.2.26",
         "published_at": "2026-09-06T00:00:00+08:00",
         "url": "https://github.com/cosmotown/emby-vision-hub/releases/tag/v7.2.26",
