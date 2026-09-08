@@ -2,6 +2,26 @@
 
 CUSTOM_RELEASES = [
     {
+        "version": "v7.2.28",
+        "published_at": "2026-09-08T00:00:00+08:00",
+        "url": "https://github.com/cosmotown/emby-vision-hub/releases/tag/v7.2.28",
+        "changelog": """## Stable Stale Canary exact item People 兼容修复
+
+- 修复 Emby 4.9.5.x 环境中 Stable Stale Canary 读取 fresh exact People 时的 endpoint 兼容问题。
+- Preview 与 Execute realtime precheck 现在统一使用 `GET /Users/{configured_user_id}/Items/{item_id}`，并读取 `People,Path,Type`。
+- fresh detail 仍严格要求 exact ID/Type、完整非空 People、精确媒体库归属、People 与固定 relationship snapshot 完全一致，且 candidate ID 不得出现在 fresh People 中。
+- configured user 缺失、HTTP/JSON/People 结构异常、身份或归属变化均 fail closed；不存在 bare `/Items/{id}` fallback，也不会使用旧 snapshot People 放行。
+
+### 隔离复现与安全边界
+
+- 在 Emby 4.9.5.0 隔离环境中，bare `GET /Items/{id}` 3/3 返回 HTTP 404；user-scoped exact GET 3/3 返回 HTTP 200，People 数分别为 61、47、15，且 ID/Type 全部精确匹配。该同版本 endpoint incompatibility 与生产 10/10 exact People preflight 失败现象一致，但不声称直接取得生产失败条目的 HTTP 状态。
+- 本版本没有放宽 People 校验、修改 Stable Stale 删除资格、管理员认证、100 人硬上限、same-name 排除或 at-most-once `DeletePerson` 合同。
+- Preview 仍为 GET-only，Emby mutation 数为 0。
+
+""",
+    },
+
+    {
         "version": "v7.2.27",
         "published_at": "2026-09-07T00:00:00+08:00",
         "url": "https://github.com/cosmotown/emby-vision-hub/releases/tag/v7.2.27",
