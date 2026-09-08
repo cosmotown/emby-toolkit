@@ -413,15 +413,14 @@ class CanaryFreshPeopleTests(unittest.TestCase):
         snap['all_roots'] = roots
         snap['item_people']['m1'].update(library_id='L', item_type='Movie')
         hit = {'Id': 'm1', 'Type': 'Movie', 'Path': '/normal/movie.mkv'}
-        response = Mock(status_code=200)
-        response.json.return_value = {**hit, 'People': [{'Id': 'A', 'Name': 'Person A'}]}
-        proc = SimpleNamespace(emby_url='http://emby', emby_api_key='secret')
+        detail = {**hit, 'People': [('A', 'Person A')]}
+        proc = SimpleNamespace(emby_url='http://emby', emby_api_key='secret', emby_user_id='user')
         with patch.object(actors.emby, 'get_person_media_query_items_strict', return_value=[hit]), \
-                patch.object(actors.emby.emby_client, 'get', return_value=response) as get:
+                patch.object(actors.emby, 'get_item_people_detail_strict', return_value=detail) as get:
             with self.assertRaises(person_cleanup_db.CanarySafetyError) as error:
                 actors._check_stale_delete_canary_candidate(proc, actors._stale_delete_canary_source_item(item()), snap)
         self.assertEqual(error.exception.state, 'linked')
-        self.assertFalse(get.call_args.kwargs['allow_redirects'])
+        get.assert_called_once_with('http://emby', 'secret', 'user', 'm1')
 
 
 class CanaryTransportTests(unittest.TestCase):

@@ -220,6 +220,43 @@ class StaleDeleteCanaryPostgresTests(unittest.TestCase):
             job['job_id'], include_items=True,
         )
 
+    def test_one_exact_people_failure_makes_preview_non_executable(self):
+        self.create_chain(2)
+        job = person_cleanup_db.create_stale_delete_canary_job(2)
+        person_cleanup_db.bind_stale_delete_canary_admin_context(job['job_id'], 'a' * 64)
+        person_cleanup_db.set_stale_delete_canary_preview_snapshot(job['job_id'], {
+            'generation': self.generation,
+            'protection_hash': 'protection',
+            'normal_people_relationship_hash': 'relationships',
+            'person_hash': 'persons',
+        })
+        person_cleanup_db.mark_stale_delete_canary_preview_item(
+            job['job_id'], job['items'][0]['person_id'],
+            'canary_delete_ready', {'query_count': 1},
+        )
+        person_cleanup_db.mark_stale_delete_canary_preview_item(
+            job['job_id'], job['items'][1]['person_id'],
+            'preflight_rejected',
+            {
+                'forensic_state': 'people_unavailable',
+                'exact_item_people': {
+                    'person_id': job['items'][1]['person_id'],
+                    'item_id': 'm1', 'item_type': 'Movie',
+                    'http_status': 200, 'reason': 'people_empty',
+                    'people_present': True, 'people_count': 0,
+                },
+            },
+            'exact query item People 无法完整核验 (people_empty)',
+        )
+        person_cleanup_db.finish_stale_delete_canary_preview(job['job_id'])
+        persisted = person_cleanup_db.get_stale_delete_canary_job(
+            job['job_id'], include_items=True,
+        )
+        self.assertEqual(persisted['state'], 'preview_failed')
+        self.assertEqual(persisted['ready_count'], 1)
+        self.assertEqual(persisted['items'][1]['post_attempts'], 0)
+        self.assertFalse(person_cleanup_db.claim_stale_delete_canary_execution(job['job_id']))
+
     def start_job(self, job_id, snapshot):
         person_cleanup_db.bind_stale_delete_canary_admin_context(job_id, 'a'*64, execution=True)
         self.assertTrue(person_cleanup_db.reserve_stale_delete_canary_admin_auth(job_id))

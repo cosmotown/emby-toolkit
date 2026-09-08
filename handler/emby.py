@@ -420,7 +420,159 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
         logger.error(
             f"获取Emby项目详情时发生未知错误 (ItemID: {item_id}, UserID: {user_id}): {e}\n{traceback.format_exc()}")
         return None
-    
+
+
+class ItemPeopleDetailError(RuntimeError):
+    """Safe, structured failure from a Canary exact-item People read."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        item_id: str,
+        item_type: Optional[str] = None,
+        http_status: Optional[int] = None,
+        people_present: bool = False,
+        people_count: Optional[int] = None,
+    ):
+        super().__init__(str(reason))
+        self.diagnostic = {
+            'item_id': str(item_id or ''),
+            'item_type': str(item_type or ''),
+            'http_status': http_status,
+            'reason': str(reason),
+            'people_present': bool(people_present),
+            'people_count': people_count,
+        }
+
+
+def get_item_people_detail_strict(
+    base_url: str,
+    api_key: str,
+    user_id: str,
+    item_id: str,
+) -> Dict[str, Any]:
+    """Read one exact media DTO through Emby's user-scoped endpoint.
+
+    This Canary-only contract intentionally has no fallback to the bare
+    ``/Items/{id}`` endpoint.  Incomplete evidence must fail closed instead of
+    being combined across endpoint shapes.
+    """
+    normalized_item_id = str(item_id or '').strip()
+    normalized_user_id = str(user_id or '').strip()
+
+    def fail(
+        reason: str,
+        *,
+        item_type: Optional[str] = None,
+        http_status: Optional[int] = None,
+        people_present: bool = False,
+        people_count: Optional[int] = None,
+    ) -> None:
+        raise ItemPeopleDetailError(
+            reason,
+            item_id=normalized_item_id,
+            item_type=item_type,
+            http_status=http_status,
+            people_present=people_present,
+            people_count=people_count,
+        )
+
+    if not base_url or not api_key or not normalized_user_id or not normalized_item_id:
+        fail('exact_item_http_failure')
+
+    try:
+        response = emby_client.get(
+            f"{base_url.rstrip('/')}/Users/{normalized_user_id}/Items/{normalized_item_id}",
+            headers={'X-Emby-Token': api_key},
+            params={'Fields': 'People,Path,Type'},
+            timeout=30,
+            allow_redirects=False,
+        )
+    except Exception:
+        fail('exact_item_http_failure')
+
+    status_code = getattr(response, 'status_code', None)
+    if not isinstance(status_code, int) or isinstance(status_code, bool) or status_code != 200:
+        fail(
+            'exact_item_http_failure',
+            http_status=status_code if isinstance(status_code, int) else None,
+        )
+
+    try:
+        payload = response.json()
+    except Exception:
+        fail('exact_item_json_invalid', http_status=status_code)
+    if not isinstance(payload, dict):
+        fail('exact_item_json_invalid', http_status=status_code)
+
+    payload_item_id = str(payload.get('Id') or '').strip()
+    payload_item_type = str(payload.get('Type') or '').strip()
+    people_present = 'People' in payload
+    raw_people = payload.get('People')
+    people_count = len(raw_people) if isinstance(raw_people, list) else None
+
+    if payload_item_id != normalized_item_id:
+        fail(
+            'exact_item_id_mismatch', item_type=payload_item_type,
+            http_status=status_code, people_present=people_present,
+            people_count=people_count,
+        )
+    if not payload_item_type:
+        fail(
+            'exact_item_type_mismatch', http_status=status_code,
+            people_present=people_present, people_count=people_count,
+        )
+    if not people_present:
+        fail(
+            'people_missing', item_type=payload_item_type,
+            http_status=status_code, people_present=False,
+        )
+    if not isinstance(raw_people, list):
+        fail(
+            'people_not_list', item_type=payload_item_type,
+            http_status=status_code, people_present=True,
+        )
+    if not raw_people:
+        fail(
+            'people_empty', item_type=payload_item_type,
+            http_status=status_code, people_present=True, people_count=0,
+        )
+
+    normalized_people = []
+    for person in raw_people:
+        if not isinstance(person, dict):
+            fail(
+                'people_row_invalid', item_type=payload_item_type,
+                http_status=status_code, people_present=True,
+                people_count=len(raw_people),
+            )
+        person_id = str(person.get('Id') or '').strip()
+        person_name = str(person.get('Name') or '').strip()
+        if not person_id:
+            fail(
+                'people_id_missing', item_type=payload_item_type,
+                http_status=status_code, people_present=True,
+                people_count=len(raw_people),
+            )
+        if not person_name:
+            fail(
+                'people_name_missing', item_type=payload_item_type,
+                http_status=status_code, people_present=True,
+                people_count=len(raw_people),
+            )
+        normalized_people.append((person_id, person_name))
+
+    return {
+        'Id': normalized_item_id,
+        'Type': payload_item_type,
+        'People': sorted(normalized_people),
+        # Path is used only by the in-memory root ownership check and must not
+        # be copied into Canary evidence or logs.
+        'Path': payload.get('Path'),
+    }
+
+
 # ✨✨✨ 更新一个 Person 条目本身的信息 ✨✨✨
 def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
     if not all([person_id, new_data, emby_server_url, emby_api_key, user_id]):

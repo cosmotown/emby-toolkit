@@ -1842,9 +1842,10 @@ STALE_DELETE_CANARY_TERMINAL_STATES = {
 
 
 class CanarySafetyError(RuntimeError):
-    def __init__(self, state, reason):
+    def __init__(self, state, reason, diagnostic=None):
         super().__init__(reason)
         self.state = state
+        self.diagnostic = dict(diagnostic or {})
 
 
 def _canary_preview_fingerprint(cursor, job):

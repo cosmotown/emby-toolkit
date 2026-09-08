@@ -1282,29 +1282,57 @@ def _check_stale_delete_canary_candidate(processor, source_item, snapshot):
         if not owner or not relationship or owner['protected_library_id'] != relationship['library_id']:
             raise person_cleanup_db.CanarySafetyError('protected', 'query 无法绑定 exact normal library')
         try:
-            response = emby.emby_client.get(
-                f"{processor.emby_url.rstrip('/')}/Items/{item_id}",
-                headers={'X-Emby-Token': processor.emby_api_key},
-                params={'Fields': 'People,Path'}, timeout=30, allow_redirects=False,
+            detail = emby.get_item_people_detail_strict(
+                processor.emby_url,
+                processor.emby_api_key,
+                getattr(processor, 'emby_user_id', None),
+                item_id,
             )
-            if response.status_code != 200:
-                raise ValueError('HTTP failure')
-            detail = response.json()
-            people = detail.get('People')
-            if (not isinstance(people, list) or not people or
-                    any(not isinstance(p, dict) or not p.get('Id') or not p.get('Name') for p in people)):
-                raise ValueError('People unavailable')
-            actual = tuple(sorted((str(p['Id']).strip(), str(p['Name']).strip()) for p in people))
-            if person_id in {p[0] for p in actual}:
-                raise person_cleanup_db.CanarySafetyError('linked', 'fresh exact People 已引用 candidate')
-            if (str(detail.get('Id')) != item_id or detail.get('Type') != relationship['item_type']
-                    or match_item_to_protected_library(detail, snapshot['all_roots']) != owner
-                    or actual != tuple(relationship['people'])):
-                raise person_cleanup_db.CanarySafetyError('relationship_drift', 'exact query item relationship 已变化')
-        except person_cleanup_db.CanarySafetyError:
-            raise
-        except Exception:
-            raise person_cleanup_db.CanarySafetyError('people_unavailable', 'exact query item People 无法完整核验') from None
+        except emby.ItemPeopleDetailError as exc:
+            diagnostic = {
+                'person_id': str(person_id),
+                **exc.diagnostic,
+            }
+            if not diagnostic.get('item_type'):
+                diagnostic['item_type'] = str(relationship.get('item_type') or hit.get('Type') or '')
+            logger.warning(
+                'Canary exact People GET rejected person_id=%s item_id=%s '
+                'item_type=%s http_status=%s reason=%s people_present=%s people_count=%s',
+                diagnostic['person_id'], diagnostic['item_id'], diagnostic['item_type'],
+                diagnostic['http_status'], diagnostic['reason'],
+                diagnostic['people_present'], diagnostic['people_count'],
+            )
+            raise person_cleanup_db.CanarySafetyError(
+                'people_unavailable',
+                f"exact query item People 无法完整核验 ({diagnostic['reason']})",
+                diagnostic,
+            ) from None
+        actual = tuple(detail['People'])
+        if person_id in {person[0] for person in actual}:
+            raise person_cleanup_db.CanarySafetyError('linked', 'fresh exact People 已引用 candidate')
+        diagnostic = {
+            'person_id': str(person_id),
+            'item_id': item_id,
+            'item_type': str(detail['Type']),
+            'http_status': 200,
+            'people_present': True,
+            'people_count': len(actual),
+        }
+        if detail['Type'] != relationship['item_type']:
+            diagnostic['reason'] = 'exact_item_type_mismatch'
+            raise person_cleanup_db.CanarySafetyError(
+                'relationship_drift', 'exact query item Type 与固定关系快照不一致', diagnostic,
+            )
+        if match_item_to_protected_library(detail, snapshot['all_roots']) != owner:
+            diagnostic['reason'] = 'exact_item_ownership_mismatch'
+            raise person_cleanup_db.CanarySafetyError(
+                'relationship_drift', 'exact query item 媒体库归属与固定关系快照不一致', diagnostic,
+            )
+        if actual != tuple(relationship['people']):
+            diagnostic['reason'] = 'exact_item_people_mismatch'
+            raise person_cleanup_db.CanarySafetyError(
+                'relationship_drift', 'exact query item People 与固定关系快照不一致', diagnostic,
+            )
     # Refresh candidate and Person identity after media GETs. No second PersonIds
     # request: classify precisely the same query items whose current DTOs we read.
     rows = person_cleanup_db.get_candidates_by_ids([person_id], include_protected=True)
@@ -1377,6 +1405,8 @@ def task_preview_stale_delete_canary(processor, job_id):
                 )
             except person_cleanup_db.CanarySafetyError as exc:
                 result = {'forensic_state': exc.state, 'error': str(exc)}
+                if exc.diagnostic:
+                    result['exact_item_people'] = exc.diagnostic
             ready = _stale_delete_canary_result_ready(result)
             person_cleanup_db.mark_stale_delete_canary_preview_item(
                 job_id,
@@ -1604,8 +1634,15 @@ def task_execute_stale_delete_canary(processor, job_id):
             elif 'item' in locals():
                 if current.get('stop_requested'):
                     state = 'stopped'
+                evidence = None
+                if isinstance(exc, person_cleanup_db.CanarySafetyError) and exc.diagnostic:
+                    evidence = {'exact_item_people': exc.diagnostic}
+                finish_kwargs = {'error': message}
+                if evidence is not None:
+                    finish_kwargs['evidence'] = evidence
                 person_cleanup_db.finish_stale_delete_canary_item(
-                    job_id, item['person_id'], 'precheck_failed', error=message,
+                    job_id, item['person_id'], 'precheck_failed',
+                    **finish_kwargs,
                 )
             elif current.get('stop_requested'):
                 state = 'stopped'
