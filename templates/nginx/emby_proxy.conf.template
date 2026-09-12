@@ -1,5 +1,16 @@
 # /etc/nginx/conf.d/emby_proxy.conf (V4 - .strm 精准捕获最终版)
 
+# Temporary VidHub diagnostic trace.  Only allow-listed query values are
+# recorded; authorization headers and token/api-key query parameters are never
+# included.
+log_format vidhub_trace escape=json
+    '[VIDHUB_TRACE] {"source":"nginx","method":"$request_method",'
+    '"path":"$uri","parent_id":"$arg_ParentId",'
+    '"include_item_types":"$arg_IncludeItemTypes","recursive":"$arg_Recursive",'
+    '"fields":"$arg_Fields","sort_by":"$arg_SortBy",'
+    '"collection_type":"$arg_CollectionType","user_agent":"$http_user_agent",'
+    '"status":$status,"bytes":$body_bytes_sent,"elapsed":$request_time}';
+
 upstream emby_server {
     server {{ EMBY_UPSTREAM }};
 }
@@ -17,6 +28,7 @@ upstream redirect_service {
 server {
     listen {{ NGINX_LISTEN_PORT }};
     server_name your.domain.com;
+    access_log /dev/stdout vidhub_trace;
 
     # --- 基础代理参数 ---
     proxy_set_header Host $host;
@@ -43,20 +55,31 @@ server {
 
     # --- 以下是虚拟库路由规则 ---
 
-    location ~ /emby/Users/([a-f0-9]+)/Views {
+    location ~ ^/(emby/)?Users/([a-f0-9]+)/Views$ {
         proxy_pass http://virtual_library_proxy;
     }
 
-    # ★★★ 规则 2：【新增的关键规则】拦截“获取库内容”的请求 ★★★
-    # 这是我们之前一直缺失的规则！
-    location ~ /emby/Users/([a-f0-9]+)/Items$ {
-        # 检查 URL 参数中是否包含 ParentId=-xxxxx
-        if ($arg_ParentId ~ ^-\d+$) {
-            # 如果是，就转发给 Python 代理
-            proxy_pass http://virtual_library_proxy;
-        }
-        # 如果不是，就执行默认行为，转发给真实 Emby
-        proxy_pass http://emby_server;
+    # During the diagnostic build, native and virtual catalogue requests both
+    # pass through the Python proxy so response counts can be compared.  The
+    # Python fallback still forwards native requests unchanged to Emby.
+    location ~ ^/(emby/)?Users/([a-f0-9]+)/Items$ {
+        proxy_pass http://virtual_library_proxy;
+    }
+
+    location = /emby/Items {
+        proxy_pass http://virtual_library_proxy;
+    }
+
+    location = /Items {
+        proxy_pass http://virtual_library_proxy;
+    }
+
+    location = /emby/Library/VirtualFolders {
+        proxy_pass http://virtual_library_proxy;
+    }
+
+    location = /Library/VirtualFolders {
+        proxy_pass http://virtual_library_proxy;
     }
 
     # 规则 3：拦截所有路径中包含虚拟ID的请求 (例如获取图片)

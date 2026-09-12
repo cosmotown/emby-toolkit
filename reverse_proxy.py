@@ -5,8 +5,8 @@ import requests
 import re
 import os
 import json
-from flask import Flask, request, Response
-from urllib.parse import urlparse, urlunparse
+from flask import Flask, g, request, Response
+from urllib.parse import urlencode, urlparse, urlunparse
 from datetime import datetime, timedelta
 import time
 import uuid 
@@ -23,6 +23,168 @@ import constants
 import extensions
 import handler.emby as emby
 logger = logging.getLogger(__name__)
+
+VIDHUB_TRACE_PREFIX = "[VIDHUB_TRACE]"
+_VIDHUB_TRACE_SENSITIVE_QUERY_MARKERS = (
+    'api_key',
+    'apikey',
+    'access_token',
+    'token',
+    'password',
+    'authorization',
+    'x-emby-token',
+)
+_VIDHUB_TRACE_VIEW_FIELDS = (
+    'Id',
+    'Name',
+    'Type',
+    'CollectionType',
+    'ServerId',
+    'ParentId',
+    'IsFolder',
+    'Path',
+    'ImageTags',
+    'PrimaryImageAspectRatio',
+    'ChildCount',
+)
+
+
+def _vidhub_trace_enabled():
+    """Temporary diagnostic switch; this branch intentionally defaults on."""
+    return str(os.environ.get('VIDHUB_TRACE_ENABLED', '1')).strip().lower() not in {
+        '0', 'false', 'no', 'off'
+    }
+
+
+def _vidhub_trace_safe_text(value, limit=2000):
+    text = str(value or '').replace('\r', '\\r').replace('\n', '\\n')
+    return text[:limit]
+
+
+def _vidhub_trace_is_sensitive_query_key(key):
+    normalized = str(key or '').strip().lower().replace('-', '_')
+    return any(marker.replace('-', '_') in normalized for marker in _VIDHUB_TRACE_SENSITIVE_QUERY_MARKERS)
+
+
+def _vidhub_trace_query_value(name):
+    target = str(name).lower()
+    for key in request.args.keys():
+        if str(key).lower() == target:
+            return request.args.get(key)
+    return None
+
+
+def _vidhub_trace_sanitized_query():
+    pairs = []
+    for key in sorted(request.args.keys(), key=lambda value: str(value).lower()):
+        values = request.args.getlist(key)
+        for value in values:
+            if _vidhub_trace_is_sensitive_query_key(key):
+                safe_value = '<redacted>'
+            else:
+                safe_value = _vidhub_trace_safe_text(value, limit=1000)
+            pairs.append((str(key), safe_value))
+    return urlencode(pairs, doseq=True)[:6000]
+
+
+def _vidhub_trace_user_id(path):
+    match = re.search(r'/(?:emby/)?Users/([^/]+)', '/' + str(path or '').lstrip('/'), re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _vidhub_trace_should_buffer(path):
+    """Buffer only small JSON catalogue endpoints needed by the trace."""
+    normalized = '/' + str(path or '').lstrip('/')
+    return bool(
+        re.search(r'/(?:emby/)?Users/[^/]+/(?:Views|Items)$', normalized, re.IGNORECASE)
+        or re.search(r'/(?:emby/)?(?:Items|Library/VirtualFolders)$', normalized, re.IGNORECASE)
+        or normalized.lower().endswith('/items/latest')
+    )
+
+
+def _vidhub_trace_response_summary(response):
+    summary = {
+        'items_count': None,
+        'total_record_count': None,
+        'views': [],
+    }
+    content_type = str(response.headers.get('Content-Type') or '').lower()
+    if 'json' not in content_type or response.direct_passthrough or response.is_streamed:
+        return summary
+
+    try:
+        payload = json.loads(response.get_data(as_text=True))
+    except (TypeError, ValueError, UnicodeError):
+        return summary
+
+    if isinstance(payload, dict):
+        items = payload.get('Items')
+        if isinstance(items, list):
+            summary['items_count'] = len(items)
+        summary['total_record_count'] = payload.get('TotalRecordCount')
+    elif isinstance(payload, list):
+        items = payload
+        summary['items_count'] = len(items)
+        summary['total_record_count'] = len(items)
+    else:
+        items = []
+
+    if not isinstance(items, list):
+        return summary
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get('Type') not in {'CollectionFolder', 'Folder', 'UserView'} and 'CollectionType' not in item:
+            continue
+        view = {}
+        for field in _VIDHUB_TRACE_VIEW_FIELDS:
+            if field not in item:
+                continue
+            value = item.get(field)
+            if field == 'ImageTags':
+                value = bool(value)
+            elif isinstance(value, str):
+                value = _vidhub_trace_safe_text(value, limit=1000)
+            view[field] = value
+        summary['views'].append(view)
+    return summary
+
+
+def _vidhub_trace_log_response(response):
+    if not _vidhub_trace_enabled():
+        return response
+
+    path = request.path
+    user_agent = _vidhub_trace_safe_text(request.headers.get('User-Agent'), limit=1000)
+    summary = _vidhub_trace_response_summary(response)
+    event = {
+        'source': 'python_proxy',
+        'client_hint': 'vidhub' if 'vidhub' in user_agent.lower() else 'unclassified',
+        'method': request.method,
+        'path': path,
+        'query_string': _vidhub_trace_sanitized_query(),
+        'user_id': _vidhub_trace_user_id(path),
+        'parent_id': _vidhub_trace_query_value('ParentId'),
+        'include_item_types': _vidhub_trace_query_value('IncludeItemTypes'),
+        'recursive': _vidhub_trace_query_value('Recursive'),
+        'fields': _vidhub_trace_query_value('Fields'),
+        'sort_by': _vidhub_trace_query_value('SortBy'),
+        'collection_type': _vidhub_trace_query_value('CollectionType'),
+        'user_agent': user_agent,
+        'status': response.status_code,
+        'items_count': summary['items_count'],
+        'total_record_count': summary['total_record_count'],
+        'elapsed_ms': round((time.monotonic() - getattr(g, 'vidhub_trace_started_at', time.monotonic())) * 1000, 2),
+    }
+    logger.info('%s %s', VIDHUB_TRACE_PREFIX, json.dumps(event, ensure_ascii=False, separators=(',', ':')))
+    for view in summary['views']:
+        logger.info(
+            '%s %s',
+            VIDHUB_TRACE_PREFIX,
+            json.dumps({'source': 'python_proxy', 'event': 'view_item', **view}, ensure_ascii=False, separators=(',', ':')),
+        )
+    return response
 
 MISSING_ID_PREFIX = "-800000_"
 
@@ -737,9 +899,20 @@ def handle_get_latest_items(user_id, params):
             forward_headers['Host'] = urlparse(base_url).netloc
             forward_params = request.args.copy()
             forward_params['api_key'] = api_key
-            resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), stream=True, timeout=30.0)
+            buffer_for_trace = _vidhub_trace_enabled() and _vidhub_trace_should_buffer(request.path)
+            resp = requests.request(
+                method=request.method,
+                url=target_url,
+                headers=forward_headers,
+                params=forward_params,
+                data=request.get_data(),
+                stream=not buffer_for_trace,
+                timeout=30.0,
+            )
             excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
             response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
+            if buffer_for_trace:
+                return Response(resp.content, resp.status_code, response_headers)
             return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
 
         if not latest_ids:
@@ -757,6 +930,17 @@ def handle_get_latest_items(user_id, params):
         return Response(json.dumps([]), mimetype='application/json')
 
 proxy_app = Flask(__name__)
+
+
+@proxy_app.before_request
+def _vidhub_trace_before_request():
+    if _vidhub_trace_enabled():
+        g.vidhub_trace_started_at = time.monotonic()
+
+
+@proxy_app.after_request
+def _vidhub_trace_after_request(response):
+    return _vidhub_trace_log_response(response)
 
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
@@ -875,19 +1059,22 @@ def proxy_all(path):
         forward_params = request.args.copy()
         forward_params['api_key'] = api_key
         
+        buffer_for_trace = _vidhub_trace_enabled() and _vidhub_trace_should_buffer(request.path)
         resp = requests.request(
             method=request.method,
             url=target_url,
             headers=forward_headers,
             params=forward_params,
             data=request.get_data(),
-            stream=True,
+            stream=not buffer_for_trace,
             timeout=30.0
         )
         
         excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
         response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
         
+        if buffer_for_trace:
+            return Response(resp.content, resp.status_code, response_headers)
         return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
         
     except Exception as e:
