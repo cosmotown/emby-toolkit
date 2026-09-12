@@ -2,6 +2,20 @@
 
 CUSTOM_RELEASES = [
     {
+        "version": "v7.2.29",
+        "published_at": "2026-09-13T00:00:00+08:00",
+        "url": "https://github.com/cosmotown/emby-vision-hub/releases/tag/v7.2.29",
+        "changelog": """## VidHub Movie-only 虚拟库兼容修复
+
+- 修复 VidHub 无法显示 Movie-only 虚拟库的问题；对 VidHub 客户端返回 `CollectionType=movies`。
+- 其他客户端继续沿用 v7.1.1 以来的 `CollectionType=mixed` 兼容策略，不回退全局 CollectionType 行为。
+- Series-only 与真正 Mixed 虚拟库的 CollectionType 行为保持不变。
+- 本版本不改变虚拟库内容筛选、用户权限、影片详情、播放、图片代理及原生 Emby 媒体库行为。
+
+""",
+    },
+
+    {
         "version": "v7.2.28",
         "published_at": "2026-09-08T00:00:00+08:00",
         "url": "https://github.com/cosmotown/emby-vision-hub/releases/tag/v7.2.28",
