@@ -50,8 +50,8 @@ _VIDHUB_TRACE_VIEW_FIELDS = (
 
 
 def _vidhub_trace_enabled():
-    """Temporary diagnostic switch; this branch intentionally defaults on."""
-    return str(os.environ.get('VIDHUB_TRACE_ENABLED', '1')).strip().lower() not in {
+    """Return whether the opt-in VidHub diagnostic trace is enabled."""
+    return str(os.environ.get('VIDHUB_TRACE_ENABLED', '0')).strip().lower() not in {
         '0', 'false', 'no', 'off'
     }
 
@@ -341,6 +341,37 @@ def _virtual_library_collection_type(definition):
         return 'tvshows'
     return 'mixed'
 
+
+def is_vidhub_client(http_request):
+    """Return whether the request comes from the narrowly identified VidHub family."""
+    user_agent = str(http_request.headers.get('User-Agent') or '').strip()
+    return user_agent.casefold().startswith('vidhub/')
+
+
+def get_virtual_collection_type(collection, http_request):
+    """Return the client-compatible CollectionType for one virtual collection."""
+    definition = collection.get('definition_json') or {}
+    if isinstance(definition, str):
+        try:
+            definition = json.loads(definition)
+        except (TypeError, ValueError):
+            definition = {}
+    if not isinstance(definition, dict):
+        definition = {}
+
+    item_types = definition.get('item_type', [])
+    if isinstance(item_types, str):
+        item_types = [item_types]
+    normalized_types = {
+        str(item_type).strip().lower()
+        for item_type in item_types or []
+        if str(item_type).strip()
+    }
+
+    if is_vidhub_client(http_request) and normalized_types == {'movie'}:
+        return 'movies'
+    return _virtual_library_collection_type(definition)
+
 def handle_get_views():
     """
     获取用户的主页视图列表。
@@ -350,7 +381,7 @@ def handle_get_views():
         return "Proxy is not ready", 503
 
     try:
-        user_id_match = re.search(r'/emby/Users/([^/]+)/Views', request.path)
+        user_id_match = re.search(r'/(?:emby/)?Users/([^/]+)/Views', request.path)
         if not user_id_match:
             return "Could not determine user from request path", 400
         user_id = user_id_match.group(1)
@@ -384,9 +415,7 @@ def handle_get_views():
             mimicked_id = to_mimicked_id(db_id)
             # 使用时间戳强制刷新封面
             image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
-            definition = coll.get('definition_json') or {}
-            
-            collection_type = _virtual_library_collection_type(definition)
+            collection_type = get_virtual_collection_type(coll, request)
 
             fake_view = {
                 "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id,
@@ -443,8 +472,7 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
         real_emby_collection_id = coll.get('emby_collection_id')
         image_tags = {"Primary": real_emby_collection_id} if real_emby_collection_id else {}
         
-        definition = coll.get('definition_json') or {}
-        collection_type = _virtual_library_collection_type(definition)
+        collection_type = get_virtual_collection_type(coll, request)
 
         fake_library_details = {
             "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id,
@@ -1014,7 +1042,9 @@ def proxy_all(path):
                     return resp
 
         # --- 拦截 B: 视图列表 (Views) ---
-        if path.endswith('/Views') and path.startswith('emby/Users/'):
+        if path.endswith('/Views') and (
+            path.startswith('emby/Users/') or path.startswith('Users/')
+        ):
             return handle_get_views()
 
         # --- 拦截 C: 最新项目 (Latest) ---

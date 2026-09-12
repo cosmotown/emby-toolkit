@@ -59,27 +59,13 @@ server {
         proxy_pass http://virtual_library_proxy;
     }
 
-    # During the diagnostic build, native and virtual catalogue requests both
-    # pass through the Python proxy so response counts can be compared.  The
-    # Python fallback still forwards native requests unchanged to Emby.
+    # Only virtual catalogue requests pass through the Python proxy. Native
+    # libraries retain the established direct Emby path.
     location ~ ^/(emby/)?Users/([a-f0-9]+)/Items$ {
-        proxy_pass http://virtual_library_proxy;
-    }
-
-    location = /emby/Items {
-        proxy_pass http://virtual_library_proxy;
-    }
-
-    location = /Items {
-        proxy_pass http://virtual_library_proxy;
-    }
-
-    location = /emby/Library/VirtualFolders {
-        proxy_pass http://virtual_library_proxy;
-    }
-
-    location = /Library/VirtualFolders {
-        proxy_pass http://virtual_library_proxy;
+        if ($arg_ParentId ~ ^-\d+$) {
+            proxy_pass http://virtual_library_proxy;
+        }
+        proxy_pass http://emby_server;
     }
 
     # 规则 3：拦截所有路径中包含虚拟ID的请求 (例如获取图片)
