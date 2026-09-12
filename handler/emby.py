@@ -614,11 +614,11 @@ def get_emby_libraries(emby_server_url, emby_api_key, user_id):
         return None
 
     target_url = f"{emby_server_url.rstrip('/')}/emby/Users/{user_id}/Views"
-    params = {'api_key': emby_api_key}
+    headers = {'X-Emby-Token': emby_api_key}
     
     try:
         logger.trace(f"  ➜ 正在从 {target_url} 获取媒体库和合集...")
-        response = emby_client.get(target_url, params=params)
+        response = emby_client.get(target_url, headers=headers)
         response.raise_for_status()
         data = response.json()
         
@@ -627,7 +627,12 @@ def get_emby_libraries(emby_server_url, emby_api_key, user_id):
         return items
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"连接Emby服务器获取媒体库/合集时失败: {e}", exc_info=True)
+        # Do not render the requests exception here: it may contain a URL with
+        # credentials supplied by older callers or adapters.
+        logger.error(
+            "连接Emby服务器获取媒体库/合集时失败: error_type=%s",
+            type(e).__name__,
+        )
         return None
     except Exception as e:
         logger.error(f"处理Emby媒体库/合集数据时发生未知错误: {e}", exc_info=True)

@@ -2,7 +2,7 @@ import json
 import os
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import config_manager  # Initialize settings before importing the proxy.
 import reverse_proxy
@@ -127,6 +127,44 @@ class VidHubTraceTests(unittest.TestCase):
         self.assertNotIn('$query_string', template)
         self.assertNotIn('$http_x_emby_token', template.lower())
         self.assertNotIn('$arg_api_key', template.lower())
+
+    def test_native_views_upstream_auth_uses_header_and_failure_log_is_path_free(self):
+        response = Mock()
+        response.json.return_value = {'Items': []}
+        with patch.object(reverse_proxy.emby.logger, 'trace', create=True), \
+             patch.object(reverse_proxy.emby.emby_client, 'get', return_value=response) as get:
+            self.assertEqual(
+                reverse_proxy.emby.get_emby_libraries(
+                    'http://isolated-emby:8096',
+                    'upstream-secret-token',
+                    'abcdef',
+                ),
+                [],
+            )
+
+        self.assertEqual(
+            get.call_args.kwargs['headers'],
+            {'X-Emby-Token': 'upstream-secret-token'},
+        )
+        self.assertNotIn('params', get.call_args.kwargs)
+
+        request_error = reverse_proxy.requests.exceptions.RequestException(
+            'https://example.invalid/Views?api_key=must-not-log'
+        )
+        with patch.object(reverse_proxy.emby.logger, 'trace', create=True), \
+             patch.object(reverse_proxy.emby.emby_client, 'get', side_effect=request_error), \
+             self.assertLogs(reverse_proxy.emby.logger, level='ERROR') as captured:
+            result = reverse_proxy.emby.get_emby_libraries(
+                'http://isolated-emby:8096',
+                'upstream-secret-token',
+                'abcdef',
+            )
+
+        self.assertIsNone(result)
+        output = '\n'.join(captured.output)
+        self.assertIn('error_type=RequestException', output)
+        self.assertNotIn('must-not-log', output)
+        self.assertNotIn('upstream-secret-token', output)
 
 
 if __name__ == '__main__':
